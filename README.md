@@ -88,11 +88,11 @@ This system transforms raw HDB resale transactions into a 0–100 Alamak Score u
     - Outlier jump (20%), 
     - market defier (15%), and 
     - unexplainable spike (35%).
-- Weights reflect each dimension’s reliability and editorial value:
+- The regression is the best single detector, but it answers “is this price explainable by fundamentals?” The other three dimensions answer “is this price surprising *in context*?” — compared to neighbours, to the block’s history, and to market timing. Different questions, all worth asking.
     - Unexplainable spike (35%): Given the highest weightage as it is the most statistically rigorous dimension — a proper regression model (R²=0.90) controlling for 20+ variables. If a flat’s price can’t be explained after accounting for location, size, floor, remaining lease, MRT proximity, hawker proximity, and more, that’s the strongest signal that something genuinely unusual is going on.
-    - Price shock (30%): The clearest, simplest signal — “This 4-room in Yishun sold WAY above other 4-rooms in Yishun.” Provides a wide, stable baseline with sufficient data (town + flat type always has many transactions).
-    - Outlier jump (20%): Block-level deviations can be dramatic (e.g. one very well-renovated unit). However, block histories can be thin as some blocks don’t transact frequently, so variance at this granularity is higher.
-    - Market defier (15%): Lowest in weightage as it enhances the score based on the context of market-wide cooling effects, not anchors it. Someone overpaying during a cooling month is interesting, but not necessarily a blockbuster moment on its own.
+    - Price shock (30%): The regression controls for town, but readers don’t think in regression terms. They think “how does this compare to other 4-rooms in my neighbourhood?” A flat could have a small regression residual (perfectly explained by its high floor and long lease) but still be the most expensive 4-room Yishun has ever seen. That’s newsworthy even if the model says it’s “fair value.”
+    - Outlier jump (20%): The regression has no block-level variable. Two flats in the same block, same type, same floor can sell $200K apart because one was fully renovated with Italian marble and the other has the original 1985 kitchen. The regression sees them as identical. The block-level z-score catches the one that suddenly broke from its block’s pattern.
+    - Market defier (15%): The regression has month fixed effects, but those capture the *average* market movement, not the *direction*. A flat selling high during a month when the overall market dipped is editorially interesting — it suggests demand that’s bucking the trend. The regression treats all transactions in that month the same.
 
 7. **Alamak threshold**
 - A flat is considered a “Alamak flat” if its score ≥ 70.
