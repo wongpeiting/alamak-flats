@@ -40,7 +40,7 @@ The Alamak Flats tracker is a curiosity engine - a way to visualise the edges of
 ---
 
 ### If you want to geek out 🧠 
-This project is built as part of Jonathan Soma’s Foundations class in the M.S. Data Journalism programme at Columbia Journalism School. ChatGPT is used generously for coding, debugging, and improving the statistical design.
+This project is built as part of Jonathan Soma’s Foundations class in the M.S. Data Journalism programme at Columbia Journalism School.
 
 #### A quick overview of how it works:
 1. Python ingests the HDB resale dataset daily from data.gov.sg.
@@ -88,11 +88,11 @@ This system transforms raw HDB resale transactions into a 0–100 Alamak Score u
     - Outlier jump (20%), 
     - market defier (15%), and 
     - unexplainable spike (35%).
-- Weights reflect their relative value to the calculation of a flat's "Alamak-ness":
-    - Price shock: Given the highest weightage as it is the clearest, simplest signal for Alamak-ness, i.e. “This 4-room in Yishun sold WAY above other 4-rooms in Yishun”. Also, it provides a wide, stable baseline with sufficient data (town + flat type always has many transactions).
-    - Outlier jump: Secondary because block-level deviations can be dramatic (e.g. one very well-renovated unit). However, block histories can be thin as some blocks don’t transact frequently, so variance at this granularity is higher.
-    - Unexplainable spike: Given equal weight to outlier jump because this is a sanity check dimension, moderating the effect of rare or unusual flats whose raw z-scores might look wild simply due to thin group sizes. It helps ensure the alerts don't only look at structural quirks (big flats, young flats, etc.).
-    - Market defier: Lowest in weightage as it's meant to enhance the score based on the context of market-wide cooling effects, not anchor it. Besides, someone overpaying during a cooling month is interesting, but not necessarily a blockbuster Alamak moment on its own. Note: Market-wide cooling effects are subtle and can vary across towns. Variance at this granularity is higher, so you don’t want it overpowering the metric.
+- Weights reflect each dimension’s reliability and editorial value:
+    - Unexplainable spike (35%): Given the highest weightage as it is the most statistically rigorous dimension — a proper regression model (R²=0.90) controlling for 20+ variables. If a flat’s price can’t be explained after accounting for location, size, floor, remaining lease, MRT proximity, hawker proximity, and more, that’s the strongest signal that something genuinely unusual is going on.
+    - Price shock (30%): The clearest, simplest signal — “This 4-room in Yishun sold WAY above other 4-rooms in Yishun.” Provides a wide, stable baseline with sufficient data (town + flat type always has many transactions).
+    - Outlier jump (20%): Block-level deviations can be dramatic (e.g. one very well-renovated unit). However, block histories can be thin as some blocks don’t transact frequently, so variance at this granularity is higher.
+    - Market defier (15%): Lowest in weightage as it enhances the score based on the context of market-wide cooling effects, not anchors it. Someone overpaying during a cooling month is interesting, but not necessarily a blockbuster moment on its own.
 
 7. **Alamak threshold**
 - A flat is considered a “Alamak flat” if its score ≥ 70.

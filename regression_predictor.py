@@ -22,6 +22,8 @@ class RegressionPredictor:
         self.baselines = data['baselines']
         self.factor_levels = data['factor_levels']
         self.metadata = data['metadata']
+        # Cast all coefficients to float (JSON may store some as strings)
+        self.coefs = {k: float(v) if v is not None else 0.0 for k, v in self.coefs.items()}
         self.intercept = self.coefs['(Intercept)']
 
         # Pre-index categorical coefficients for fast lookup
@@ -32,7 +34,7 @@ class RegressionPredictor:
                 # R names dummies as e.g. "townBEDOK", "flat_type3 ROOM"
                 key = f"{var_name}{level}"
                 if key in self.coefs:
-                    self._cat_coefs[var_name][level] = self.coefs[key]
+                    self._cat_coefs[var_name][level] = float(self.coefs[key])
                 else:
                     # Baseline level (coefficient = 0)
                     self._cat_coefs[var_name][level] = 0.0
