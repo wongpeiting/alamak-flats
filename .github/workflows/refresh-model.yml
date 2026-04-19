@@ -1,0 +1,192 @@
+name: monthly-model-refresh
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:  # manual trigger
+  schedule:
+    - cron: '0 0 1 * *'  # 1st of each month at midnight UTC
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out this repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        ref: main
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Set up R
+      uses: r-lib/actions/setup-r@v2
+      with:
+        r-version: '4.4.0'
+
+    - name: Install R packages
+      run: |
+        Rscript -e 'install.packages(c("tidyverse", "jsonlite", "scales"), repos="https://cloud.r-project.org")'
+
+    - name: Install Python packages
+      run: |
+        pip install pandas numpy requests
+
+    - name: Download latest HDB data and prepare analysis dataset
+      run: |
+        python3 << 'EOF'
+        import requests, pandas as pd, numpy as np, os, time
+
+        # Download latest 2 years from data.gov.sg
+        resp = requests.get('https://api-open.data.gov.sg/v1/public/api/datasets/d_8b84c4ee58e3cfc0ece0d773c8ca6abc/poll-download', timeout=30)
+        url = resp.json()['data']['url']
+        csv_resp = requests.get(url, timeout=120)
+        with open('data/hdb_raw.csv', 'wb') as f:
+            f.write(csv_resp.content)
+
+        df = pd.read_csv('data/hdb_raw.csv')
+        df['month'] = pd.to_datetime(df['month'], format='%Y-%m')
+        df['resale_price'] = pd.to_numeric(df['resale_price'], errors='coerce')
+        df['floor_area_sqm'] = pd.to_numeric(df['floor_area_sqm'], errors='coerce')
+        df['lease_commence_date'] = pd.to_numeric(df['lease_commence_date'], errors='coerce')
+        df = df.dropna(subset=['resale_price', 'floor_area_sqm', 'lease_commence_date'])
+
+        # Filter to last 2 years
+        cutoff = df['month'].max() - pd.DateOffset(years=2)
+        df = df[df['month'] > cutoff].copy()
+
+        # Derive variables
+        df['storey_low'] = df['storey_range'].str.extract(r'(\d+)\s+TO').astype(float)
+        df['storey_high'] = df['storey_range'].str.extract(r'TO\s+(\d+)').astype(float)
+        df['storey_mid'] = (df['storey_low'] + df['storey_high']) / 2
+        df['remaining_lease_years'] = 99 - (df['month'].dt.year - df['lease_commence_date'])
+
+        # Flat model grouping
+        counts = df['flat_model'].value_counts()
+        rare = counts[counts < 50].index.tolist()
+        df['flat_model_grouped'] = df['flat_model'].apply(lambda x: 'Other' if x in rare else x)
+
+        # Geocoding + distances
+        geo = pd.read_csv('data/onemap_geocoded.csv')
+        df = df.merge(geo[['block', 'street_name', 'latitude', 'longitude']], on=['block', 'street_name'], how='left')
+
+        # New blocks
+        new_blocks = df[df['latitude'].isna()][['block', 'street_name']].drop_duplicates()
+        if len(new_blocks) > 0:
+            new_results = []
+            for _, row in new_blocks.iterrows():
+                try:
+                    r = requests.get('https://www.onemap.gov.sg/api/common/elastic/search',
+                        params={'searchVal': f"{row['block']} {row['street_name']}", 'returnGeom': 'Y', 'getAddrDetails': 'Y'}, timeout=10).json()
+                    if r.get('found', 0) > 0:
+                        new_results.append({'block': row['block'], 'street_name': row['street_name'],
+                            'latitude': float(r['results'][0]['LATITUDE']), 'longitude': float(r['results'][0]['LONGITUDE'])})
+                        df.loc[(df['block']==row['block'])&(df['street_name']==row['street_name']),
+                            ['latitude','longitude']] = float(r['results'][0]['LATITUDE']), float(r['results'][0]['LONGITUDE'])
+                except: pass
+                time.sleep(0.3)
+            if new_results:
+                geo = pd.concat([geo, pd.DataFrame(new_results)], ignore_index=True)
+                geo.to_csv('data/onemap_geocoded.csv', index=False)
+
+        # Distances
+        def haversine_km(lat1, lon1, lat2, lon2):
+            R = 6371
+            dlat, dlon = np.radians(lat2-lat1), np.radians(lon2-lon1)
+            a = np.sin(dlat/2)**2 + np.cos(np.radians(lat1))*np.cos(np.radians(lat2))*np.sin(dlon/2)**2
+            return R*2*np.arcsin(np.sqrt(a))
+
+        block_coords = df[['block','street_name','latitude','longitude']].drop_duplicates().dropna(subset=['latitude'])
+        block_coords['dist_cbd_km'] = haversine_km(block_coords['latitude'], block_coords['longitude'], 1.2840, 103.8514)
+
+        for key, path in {'mrt':'data/mrt_stations.csv','hawker':'data/loc_hawker_centres.csv',
+            'popular_school':'data/loc_popular_schools.csv','park':'data/loc_parks.csv',
+            'hospital':'data/loc_hospitals.csv','columbarium':'data/loc_columbarium.csv',
+            'temple':'data/loc_temples.csv','coast':'data/loc_coast.csv'}.items():
+            ref = pd.read_csv(path)
+            dists = []
+            for _, row in block_coords.iterrows():
+                d = haversine_km(row['latitude'], row['longitude'], ref['latitude'].values, ref['longitude'].values)*1000
+                dists.append(np.min(d))
+            block_coords[f'{key}_dist_m'] = dists
+
+        dist_cols = [c for c in block_coords.columns if '_dist_m' in c or 'dist_cbd' in c]
+        df = df.merge(block_coords[['block','street_name']+dist_cols], on=['block','street_name'], how='left')
+
+        # Superstition vars
+        price_str = df['resale_price'].astype(int).astype(str)
+        df['num_eights_tail'] = price_str.str[-4:].str.count('8')
+        df['price_has_168'] = price_str.str.contains('168').astype(int)
+        df['block_has_4'] = df['block'].str.contains('4').astype(int)
+        df['cny_month'] = df['month'].dt.month.isin([1,2]).astype(int)
+        df['log_resale_price'] = np.log10(df['resale_price'])
+
+        # Save
+        df.to_csv('data/hdb_analysis.csv', index=False)
+        print(f"Saved {len(df):,} rows to data/hdb_analysis.csv")
+        EOF
+
+    - name: Fit Model 10 and export coefficients
+      run: |
+        Rscript << 'EOF'
+        library(tidyverse)
+        library(jsonlite)
+
+        df <- read_csv('data/hdb_analysis.csv', show_col_types = FALSE)
+        df$remaining_lease_sq <- df$remaining_lease_years^2
+        df$month_factor <- factor(format(df$month, '%Y-%m'))
+
+        model10 <- lm(resale_price ~ town + flat_type + floor_area_sqm + storey_mid +
+            remaining_lease_years + remaining_lease_sq + flat_model_grouped +
+            dist_cbd_km + mrt_dist_m + hawker_dist_m + popular_school_dist_m +
+            park_dist_m + hospital_dist_m + columbarium_dist_m + temple_dist_m +
+            coast_dist_m + num_eights_tail + price_has_168 + block_has_4 + cny_month +
+            month_factor, data = df)
+
+        s <- summary(model10)
+        cat(sprintf("R-squared: %.4f\n", s$r.squared))
+
+        coefs <- coef(model10)
+        cat_vars <- list(
+            town = sort(unique(df$town)),
+            flat_type = sort(unique(df$flat_type)),
+            flat_model_grouped = sort(unique(df$flat_model_grouped)),
+            month_factor = sort(unique(as.character(df$month_factor)))
+        )
+        baselines <- lapply(cat_vars, function(x) x[1])
+
+        export <- list(
+            coefficients = as.list(coefs),
+            baselines = baselines,
+            factor_levels = cat_vars,
+            metadata = list(
+                r_squared = s$r.squared,
+                adj_r_squared = s$adj.r.squared,
+                residual_se = s$sigma,
+                n_obs = nrow(df),
+                date_range_start = as.character(min(df$month)),
+                date_range_end = as.character(max(df$month)),
+                exported_at = as.character(Sys.time())
+            )
+        )
+
+        write_json(export, "data/model_coefficients.json", pretty = TRUE, auto_unbox = TRUE)
+        cat("Exported model coefficients.\n")
+        EOF
+
+    - name: Clean up temp files
+      run: rm -f data/hdb_raw.csv data/hdb_analysis.csv
+
+    - name: Commit and push
+      run: |
+        git config user.name "Automated"
+        git config user.email "actions@users.noreply.github.com"
+        git pull --rebase origin main || true
+        git add data/model_coefficients.json data/onemap_geocoded.csv
+        timestamp=$(date -u)
+        git commit -m "Model refresh: ${timestamp}" || exit 0
+        git push origin HEAD:main
